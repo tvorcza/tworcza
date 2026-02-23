@@ -1,129 +1,227 @@
-<script>
-(function () {
-  if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-  if (window.matchMedia && window.matchMedia("(max-width: 991px)").matches) return;
-  if (!window.Lenis) return;
+/* site-animations.js */
+(() => {
+  'use strict';
 
-  if (window.gsap && window.ScrollTrigger) {
-    gsap.registerPlugin(ScrollTrigger);
+  const CONFIG = {
+    // Webflow: desktop dopiero powyżej 991px (jak w Twoim kodzie)
+    desktopMaxWidth: 991,
+
+    // Page fader
+    faderId: 'page-fader',
+    faderHideDelayMs: 20,
+    transitionDelayMs: 120,
+
+    // Jeśli ustawisz true, możesz USUNĄĆ tagi CDN GSAP/ScrollTrigger z Webflow,
+    // bo ten plik doładuje je sam (tylko na desktop i tylko gdy animacje są włączone).
+    autoLoadGSAP: true,
+    gsapUrl: 'https://cdn.jsdelivr.net/npm/gsap@3.13.0/dist/gsap.min.js',
+    scrollTriggerUrl: 'https://cdn.jsdelivr.net/npm/gsap@3.13.0/dist/ScrollTrigger.min.js',
+  };
+
+  const match = (q) => (window.matchMedia ? window.matchMedia(q) : null);
+
+  function prefersReducedMotion() {
+    const mq = match('(prefers-reduced-motion: reduce)');
+    return !!(mq && mq.matches);
   }
 
-  window.lenis = new Lenis({
-    duration: 1.2,
-    lerp: 0.08,
-    easing: function (t) {
-      return Math.min(1, 1.001 - Math.pow(2, -10 * t));
+  function isDesktop() {
+    const mq = match(`(max-width: ${CONFIG.desktopMaxWidth}px)`);
+    return !(mq && mq.matches);
+  }
+
+  function onDomReady(fn) {
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', fn, { once: true });
+    } else {
+      fn();
     }
-  });
+  }
 
-  if (window.ScrollTrigger) {
-    window.lenis.on("scroll", ScrollTrigger.update);
+  function runWhenIdle(fn, timeout = 1500) {
+    if ('requestIdleCallback' in window) {
+      window.requestIdleCallback(fn, { timeout });
+    } else {
+      setTimeout(fn, 1);
+    }
+  }
 
-    requestAnimationFrame(function () {
-      ScrollTrigger.refresh();
+  function loadScriptOnce(src, id) {
+    return new Promise((resolve, reject) => {
+      if (!src) return reject(new Error('Missing script src'));
+
+      if (id && document.getElementById(id)) return resolve();
+
+      // jeśli już istnieje taki src
+      const scripts = document.scripts;
+      for (let i = 0; i < scripts.length; i++) {
+        if (scripts[i].src === src) return resolve();
+      }
+
+      const s = document.createElement('script');
+      if (id) s.id = id;
+      s.src = src;
+      s.async = true; // równoległy download, nie blokuje parsera
+      s.onload = () => resolve();
+      s.onerror = () => reject(new Error(`Failed to load: ${src}`));
+      document.head.appendChild(s);
     });
   }
 
-  function raf(time) {
-    window.lenis.raf(time);
-    requestAnimationFrame(raf);
+  async function ensureGSAP() {
+    if (window.gsap && window.ScrollTrigger) return true;
+    if (!CONFIG.autoLoadGSAP) return false;
+
+    try {
+      if (!window.gsap) await loadScriptOnce(CONFIG.gsapUrl, 'lib-gsap');
+      if (!window.ScrollTrigger) await loadScriptOnce(CONFIG.scrollTriggerUrl, 'lib-scrolltrigger');
+      return !!(window.gsap && window.ScrollTrigger);
+    } catch {
+      return false;
+    }
   }
-  requestAnimationFrame(raf);
-})();
-</script>
-<script src="https://cdn.jsdelivr.net/npm/gsap@3.13.0/dist/gsap.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/gsap@3.13.0/dist/ScrollTrigger.min.js"></script>
-<script>
-  (function () {
-    var TRANSITION_DURATION = 120;
-    var fader = document.getElementById("page-fader");
 
-    function hideFader() {
-      if (!fader) return;
-      fader.classList.add("is-hidden");
-    }
+  function safeRegisterScrollTrigger() {
+    if (!window.gsap || !window.ScrollTrigger) return;
+    try {
+      window.gsap.registerPlugin(window.ScrollTrigger);
+    } catch {}
+  }
 
-    function showFader(callback) {
-      if (!fader) {
-        if (typeof callback === "function") callback();
-        return;
-      }
-      fader.classList.remove("is-hidden");
-      if (typeof callback === "function") {
-        setTimeout(callback, TRANSITION_DURATION);
-      }
-    }
+  // 1) PAGE FADER (działa na wszystkich urządzeniach, bo to lekki UX)
+  function initPageFader() {
+    const fader = document.getElementById(CONFIG.faderId);
+    if (!fader) return;
 
-    window.addEventListener("DOMContentLoaded", function () {
-      setTimeout(hideFader, 20);
+    const hideFader = () => fader.classList.add('is-hidden');
+
+    const showFader = (cb) => {
+      fader.classList.remove('is-hidden');
+      if (typeof cb === 'function') setTimeout(cb, CONFIG.transitionDelayMs);
+    };
+
+    setTimeout(hideFader, CONFIG.faderHideDelayMs);
+
+    window.addEventListener('pageshow', (event) => {
+      if (event.persisted) hideFader(); // bfcache
     });
 
-    window.addEventListener("pageshow", function (event) {
-      if (event.persisted) {
-        hideFader();
-      }
-    });
+    document.addEventListener('click', (event) => {
+      if (event.defaultPrevented) return;
+      if (event.button !== 0) return; // tylko lewy klik
+      if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
 
-    document.addEventListener("click", function (event) {
-      var link = event.target.closest("a");
+      const link = event.target.closest('a');
       if (!link) return;
 
-      var href = link.getAttribute("href");
-      if (!href) return;
+      // opcjonalny opt-out na linku
+      if (link.hasAttribute('data-no-fade')) return;
 
+      const hrefAttr = link.getAttribute('href');
+      if (!hrefAttr) return;
 
-      if (
-        href.charAt(0) === "#" ||                
-        href.indexOf("mailto:") === 0 ||         
-        href.indexOf("tel:") === 0 ||            
-        link.target === "_blank" ||               
-        link.host !== window.location.host ||     
-        href === window.location.pathname ||     
-        href === window.location.href            
-      ) {
+      if (hrefAttr.charAt(0) === '#') return;
+      if (/^(mailto:|tel:|javascript:)/i.test(hrefAttr)) return;
+      if (link.target === '_blank') return;
+      if (link.hasAttribute('download')) return;
+
+      let url;
+      try {
+        url = new URL(hrefAttr, window.location.href);
+      } catch {
         return;
       }
 
+      if (url.host !== window.location.host) return;
+
+      // ignoruj tę samą stronę (z lub bez hash)
+      const current = new URL(window.location.href);
+      current.hash = '';
+      url.hash = '';
+      if (url.href === current.href) return;
+
       event.preventDefault();
-
-      showFader(function () {
-        window.location.href = href;
+      showFader(() => {
+        window.location.href = url.href;
       });
     });
-  })();
-</script>
-<script>
-gsap.registerPlugin(ScrollTrigger);
+  }
 
-function initFooterParallax(){
-  document.querySelectorAll('[data-footer-parallax]').forEach(el => {
-    const tl = gsap.timeline({
-      scrollTrigger: {
-        trigger: el,
-        start: 'clamp(top bottom)',
-        end: 'clamp(top top)',
-        scrub: true
+  // 2) LENIS (tylko desktop + bez prefers-reduced-motion)
+  function initLenis() {
+    if (prefersReducedMotion() || !isDesktop()) return;
+
+    // Nie inicjuj ponownie
+    if (window.lenis && typeof window.lenis.raf === 'function') return;
+
+    if (!window.Lenis) return; // Lenis musi być załadowany gdzieś osobno (jak u Ciebie)
+
+    window.lenis = new window.Lenis({
+      duration: 1.2,
+      lerp: 0.08,
+      easing: (t) => Math.min(1, 1.001 - Math.pow(2, -10 * t)),
+    });
+
+    if (window.ScrollTrigger && window.lenis && typeof window.lenis.on === 'function') {
+      window.lenis.on('scroll', window.ScrollTrigger.update);
+      requestAnimationFrame(() => window.ScrollTrigger.refresh());
+    }
+
+    const raf = (time) => {
+      if (window.lenis) window.lenis.raf(time);
+      requestAnimationFrame(raf);
+    };
+    requestAnimationFrame(raf);
+  }
+
+  // 3) FOOTER PARALLAX (tylko desktop + bez prefers-reduced-motion)
+  function initFooterParallax() {
+    if (prefersReducedMotion() || !isDesktop()) return;
+
+    const els = document.querySelectorAll('[data-footer-parallax]');
+    if (!els.length) return;
+
+    if (!window.gsap || !window.ScrollTrigger) return;
+
+    safeRegisterScrollTrigger();
+
+    els.forEach((el) => {
+      const inner = el.querySelector('[data-footer-parallax-inner]');
+      const dark = el.querySelector('[data-footer-parallax-dark]');
+      if (!inner && !dark) return;
+
+      const tl = window.gsap.timeline({
+        scrollTrigger: {
+          trigger: el,
+          start: 'clamp(top bottom)',
+          end: 'clamp(top top)',
+          scrub: true,
+        },
+      });
+
+      if (inner) tl.from(inner, { yPercent: -25, ease: 'linear' }, 0);
+      if (dark) tl.from(dark, { opacity: 0.5, ease: 'linear' }, 0);
+    });
+  }
+
+  // BOOT
+  onDomReady(() => {
+    initPageFader();
+
+    // Cięższe rzeczy odpalamy dopiero gdy przeglądarka ma “luz” (lepszy LCP/TTI)
+    runWhenIdle(async () => {
+      const shouldAnimate = !prefersReducedMotion() && isDesktop();
+
+      // Jeśli GSAP potrzebujesz gdziekolwiek na desktop (nie tylko footer),
+      // to zostaw to jako "shouldAnimate". Jeśli chcesz jeszcze mocniej optymalizować,
+      // możesz sprawdzać np. czy istnieje [data-footer-parallax] zanim doładujesz GSAP.
+      if (shouldAnimate) {
+        const ok = await ensureGSAP();
+        if (ok) safeRegisterScrollTrigger();
       }
+
+      initLenis();
+      initFooterParallax();
     });
-  
-    const inner = el.querySelector('[data-footer-parallax-inner]');
-    const dark  = el.querySelector('[data-footer-parallax-dark]');
-  
-    if (inner) {
-      tl.from(inner, {
-        yPercent: -25,
-        ease: 'linear'
-      });
-    }
-  
-    if (dark) {
-      tl.from(dark, {
-        opacity: 0.5,
-        ease: 'linear'
-      }, '<');
-    }
   });
-}
-document.addEventListener('DOMContentLoaded', () => {
-  initFooterParallax();
-});</script>
+})();
